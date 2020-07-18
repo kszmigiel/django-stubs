@@ -256,8 +256,10 @@ class NewSemanalDjangoPlugin(Plugin):
             class_name, _, _ = fullname.rpartition('.')
             info = self._get_typeinfo_or_none(class_name)
             if info and info.has_base(fullnames.BASE_MANAGER_CLASS_FULLNAME):
+                print('WYWOLANIE HOOKA')
                 return ManagerFromQuerySetCallback(self)
         return None
+
 
 def plugin(version):
     return NewSemanalDjangoPlugin

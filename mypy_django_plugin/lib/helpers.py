@@ -12,8 +12,15 @@ from mypy.nodes import (
 from mypy.plugin import (
     AttributeContext, ClassDefContext, DynamicClassDefContext, FunctionContext, MethodContext,
 )
+from mypy.nodes import (
+    GDEF, MDEF, Argument, Block, ClassDef, Expression, FuncDef, MemberExpr, MypyFile, NameExpr, PlaceholderNode,
+    StrExpr, SymbolNode, SymbolTable, SymbolTableNode, TypeInfo, Var,
+)
+
+from mypy.plugins.common import add_method
+
 from mypy.semanal import SemanticAnalyzer
-from mypy.types import AnyType, Instance, NoneTyp, ProperType
+from mypy.types import AnyType, CallableType, Instance, NoneTyp, ProperType
 from mypy.types import Type as MypyType
 from mypy.types import TypeOfAny, UnionType
 
@@ -25,6 +32,7 @@ if TYPE_CHECKING:
 
 AnyPluginAPI = Union[TypeChecker, SemanticAnalyzer]
 
+import inspect
 
 class DjangoPluginCallback:
     django_context: 'DjangoContext'
@@ -396,3 +404,83 @@ def get_nested_meta_node_for_current_class(info: TypeInfo) -> Optional[TypeInfo]
     if metaclass_sym is not None and isinstance(metaclass_sym.node, TypeInfo):
         return metaclass_sym.node
     return None
+
+def get_semanal_api(ctx: Union[ClassDefContext, DynamicClassDefContext]) -> SemanticAnalyzer:
+    if not isinstance(ctx.api, SemanticAnalyzer):
+        raise ValueError('Not a SemanticAnalyzer')
+    return ctx.api
+
+def build_unannotated_method_args(method_node: FuncDef) -> Tuple[List[Argument], MypyType]:
+    prepared_arguments = []
+    for argument in method_node.arguments[1:]:
+        argument.type_annotation = AnyType(TypeOfAny.unannotated)
+        prepared_arguments.append(argument)
+    return_type = AnyType(TypeOfAny.unannotated)
+    return prepared_arguments, return_type
+
+def copy_method_to_another_class(ctx: ClassDefContext, self_type: Instance,
+                                 new_method_name: str, method_node: FuncDef) -> None:
+    print('WYWOŁANIE COPY METHOD')
+
+    curframe = inspect.currentframe()
+    calframe = inspect.getouterframes(curframe, 2)
+    print('caller name:', calframe[1][3])
+
+    semanal_api = get_semanal_api(ctx)
+    if method_node.type is None:
+        if not semanal_api.final_iteration:
+            semanal_api.defer()
+            return
+
+        arguments, return_type = build_unannotated_method_args(method_node)
+        add_method(ctx,
+                   new_method_name,
+                   args=arguments,
+                   return_type=return_type,
+                   self_type=self_type)
+        return
+
+    method_type = method_node.type
+    if not isinstance(method_type, CallableType):
+        if not semanal_api.final_iteration:
+            semanal_api.defer()
+        return
+
+    arguments = []
+    bound_return_type = semanal_api.anal_type(method_type.ret_type,
+                                              allow_placeholder=True)
+
+    assert bound_return_type is not None
+
+    if isinstance(bound_return_type, PlaceholderNode):
+        return
+
+    for arg_name, arg_type, original_argument in zip(method_type.arg_names[1:],
+                                                     method_type.arg_types[1:],
+                                                     method_node.arguments[1:]):
+        bound_arg_type = semanal_api.anal_type(arg_type, allow_placeholder=True)
+        if bound_arg_type is None and not semanal_api.final_iteration:
+            semanal_api.defer()
+            return
+
+        assert bound_arg_type is not None
+
+        if isinstance(bound_arg_type, PlaceholderNode):
+            return
+
+        var = Var(name=original_argument.variable.name,
+                  type=arg_type)
+        var.line = original_argument.variable.line
+        var.column = original_argument.variable.column
+        argument = Argument(variable=var,
+                            type_annotation=bound_arg_type,
+                            initializer=original_argument.initializer,
+                            kind=original_argument.kind)
+        argument.set_line(original_argument)
+        arguments.append(argument)
+    
+    add_method(ctx,
+               new_method_name,
+               args=arguments,
+               return_type=bound_return_type,
+               self_type=self_type)

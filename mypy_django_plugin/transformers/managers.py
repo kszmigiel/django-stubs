@@ -30,6 +30,7 @@ class ManagerCallback(helpers.DynamicClassPluginCallback):
             self_type: Instance,
             new_method_name: str,
             method_node: FuncDef) -> None:
+        print('WYWOŁANIE COPY METHOD')
         if method_node.type is None:
             if not self.semanal_api.final_iteration:
                 self.semanal_api.defer()
@@ -87,7 +88,6 @@ class ManagerCallback(helpers.DynamicClassPluginCallback):
                     kind=original_argument.kind)
             argument.set_line(original_argument)
             arguments.append(argument)
-
         add_method_to_class(
                 ctx.api,
                 ctx.cls,
@@ -99,6 +99,7 @@ class ManagerCallback(helpers.DynamicClassPluginCallback):
 
 class ManagerFromQuerySetCallback(ManagerCallback):
     def create_new_dynamic_class(self) -> None:
+        print('WYWOŁANIE METODY HOOKA')
         callee = self.call_expr.callee
 
         assert isinstance(callee, MemberExpr)
@@ -138,9 +139,12 @@ class ManagerFromQuerySetCallback(ManagerCallback):
 
         sym = self.semanal_api.lookup_fully_qualified_or_none(derived_queryset_fullname)
         assert sym is not None
-        if sym.node is None and not self.defer_till_next_iteration():
-            # inherit from Any to prevent false-positives, if queryset class cannot be resolved
-            new_manager_info.fallback_to_any = True
+        if sym.node is None:
+            if not self.semanal_api.final_iteration:
+                self.semanal_api.defer()
+            else:
+                # inherit from Any to prevent false-positives, if queryset class cannot be resolved
+                new_manager_info.fallback_to_any = True
             return
 
         derived_queryset_info = sym.node
@@ -162,22 +166,25 @@ class ManagerFromQuerySetCallback(ManagerCallback):
                 reason=self.call_expr, api=self.semanal_api)
         self_type = Instance(new_manager_info, [])
         # we need to copy all methods in MRO before django.db.models.query.QuerySet
+        helper_counter = 1
         for class_mro_info in derived_queryset_info.mro:
             if class_mro_info.fullname == fullnames.QUERYSET_CLASS_FULLNAME:
                 break
             for name, sym in class_mro_info.names.items():
                 if isinstance(sym.node, FuncDef):
-                    # self.copy_method_to_another_class(
-                    #        class_def_context,
-                    #        self_type,
-                    #        new_method_name=name,
-                    #        method_node=sym.node)
+                    helper_counter += 1
+                    print('WYWOLUJE COPY METHOD')
+                    helpers.copy_method_to_another_class(
+                            class_def_context,
+                            self_type,
+                            new_method_name=name,
+                            method_node=sym.node)
 
                     # both versions do not work at the moment
 
 
-                    sem_helpers.copy_method_or_incomplete_defn_exception(
-                            class_def_context,
-                            self_type,
-                            name,
-                            sym.node)
+                    #sem_helpers.copy_method_or_incomplete_defn_exception(
+                    #        class_def_context,
+                    #        self_type,
+                    #        name,
+                    #        sym.node)
